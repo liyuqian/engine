@@ -171,14 +171,27 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
             snapshot_delegate_promise->get_future().get()  //
             ));
 
-        if (!shell->Setup(std::move(platform_view),
-                          engine_promise->get_future().get(),
-                          rasterizer_promise->get_future().get(),
-                          io_manager_promise->get_future().get())) {
-          shell_promise->set_value(nullptr);
-        } else {
-          shell_promise->set_value(std::move(shell));
-        }
+        auto engine = engine_promise->get_future().get();
+        auto rasterizer = rasterizer_promise->get_future().get();
+        auto io_manager = io_manager_promise->get_future().get();
+        fml::TaskRunner::RunNowOrPostTask(
+            shell->GetTaskRunners().GetPlatformTaskRunner(),
+            fml::MakeCopyable([
+              shell = std::move(shell),
+              platform_view = std::move(platform_view),
+              engine = std::move(engine),
+              rasterizer = std::move(rasterizer),
+              io_manager = std::move(io_manager),
+              shell_promise]() mutable {
+                if (!shell->Setup(std::move(platform_view),
+                                  std::move(engine),
+                                  std::move(rasterizer),
+                                  std::move(io_manager))) {
+                  shell_promise->set_value(nullptr);
+                } else {
+                  shell_promise->set_value(std::move(shell));
+                }
+              }));
       }));
 
   return shell_promise->get_future();
