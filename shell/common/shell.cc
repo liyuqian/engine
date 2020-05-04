@@ -63,9 +63,7 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
   // Create the rasterizer on the raster thread.
 
   auto rasterizer_promise = std::make_shared<std::promise<std::unique_ptr<Rasterizer>>>();
-  auto rasterizer_future = rasterizer_promise->get_future();
   auto snapshot_delegate_promise = std::make_shared<std::promise<fml::WeakPtr<SnapshotDelegate>>>();
-  auto snapshot_delegate_future = snapshot_delegate_promise->get_future();
   fml::TaskRunner::RunNowOrPostTask(
       task_runners.GetRasterTaskRunner(), [rasterizer_promise,  //
                                            &snapshot_delegate_promise,
@@ -99,11 +97,8 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
   // other subsystems.
 
   auto io_manager_promise = std::make_shared<std::promise<std::unique_ptr<ShellIOManager>>>();
-  auto io_manager_future = io_manager_promise->get_future();
   auto weak_io_manager_promise = std::make_shared<std::promise<fml::WeakPtr<ShellIOManager>>>();
-  auto weak_io_manager_future = weak_io_manager_promise->get_future();
   auto unref_queue_promise = std::make_shared<std::promise<fml::RefPtr<SkiaUnrefQueue>>>();
-  auto unref_queue_future = unref_queue_promise->get_future();
   auto io_task_runner = shell->GetTaskRunners().GetIOTaskRunner();
 
   // TODO(gw280): The WeakPtr here asserts that we are derefing it on the
@@ -136,24 +131,22 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
 
   // Create the engine on the UI thread.
   auto engine_promise = std::make_shared<std::promise<std::unique_ptr<Engine>>>();
-  auto engine_future = engine_promise->get_future();
   fml::TaskRunner::RunNowOrPostTask(
       shell->GetTaskRunners().GetUITaskRunner(),
       fml::MakeCopyable([engine_promise,                                 //
-                         shell = shell.get(),                             //
-                        //  shell = std::move(shell),                        //
+                        //  shell = shell.get(),                             //
+                         shell = std::move(shell),                        //
                          &dispatcher_maker,                               //
                          &window_data,                                    //
                          isolate_snapshot = std::move(isolate_snapshot),  //
                          vsync_waiter = std::move(vsync_waiter),          //
-                         &weak_io_manager_future,                         //
-                         &snapshot_delegate_future,                       //
-                         &unref_queue_future                              //
-                        //  shell_promise,
-                        //  &engine_future,
-                        //  &rasterizer_future,
-                        //  platform_view = std::move(platform_view),
-                        //  &io_manager_future
+                         weak_io_manager_promise,                         //
+                         snapshot_delegate_promise,                       //
+                         unref_queue_promise,                              //
+                         shell_promise,
+                         rasterizer_promise,
+                         io_manager_promise,
+                         platform_view = std::move(platform_view)
   ]() mutable {
         TRACE_EVENT0("flutter", "ShellSetupUISubsystem");
         const auto& task_runners = shell->GetTaskRunners();
@@ -172,21 +165,21 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
             window_data,                    //
             shell->GetSettings(),           //
             std::move(animator),            //
-            weak_io_manager_future.get(),   //
-            unref_queue_future.get(),       //
-            snapshot_delegate_future.get()  //
+            weak_io_manager_promise->get_future().get(),   //
+            unref_queue_promise->get_future().get(),       //
+            snapshot_delegate_promise->get_future().get()  //
             ));
-      }));
 
-        if (!shell->Setup(std::move(platform_view),  //
-                          engine_future.get(),       //
-                          rasterizer_future.get(),   //
-                          io_manager_future.get())   //
+        if (!shell->Setup(std::move(platform_view),
+                          engine_promise->get_future().get(),
+                          rasterizer_promise->get_future().get(),
+                          io_manager_promise->get_future().get())
         ) {
           shell_promise->set_value(nullptr);
         } else {
           shell_promise->set_value(std::move(shell));
         }
+      }));
 
   return shell_promise->get_future();
 }
