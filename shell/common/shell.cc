@@ -40,7 +40,7 @@ constexpr char kSystemChannel[] = "flutter/system";
 constexpr char kTypeKey[] = "type";
 constexpr char kFontChange[] = "fontsChange";
 
-std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
+std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
     DartVMRef vm,
     TaskRunners task_runners,
     const WindowData window_data,
@@ -48,9 +48,13 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
     fml::RefPtr<const DartSnapshot> isolate_snapshot,
     const Shell::CreateCallback<PlatformView>& on_create_platform_view,
     const Shell::CreateCallback<Rasterizer>& on_create_rasterizer) {
+
+  std::promise<std::unique_ptr<Shell>> shell_promise;
+
   if (!task_runners.IsValid()) {
     FML_LOG(ERROR) << "Task runners to run the shell were invalid.";
-    return nullptr;
+    shell_promise.set_value(nullptr);
+    return shell_promise.get_future();
   }
 
   auto shell =
@@ -76,14 +80,16 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
   // Create the platform view on the platform thread (this thread).
   auto platform_view = on_create_platform_view(*shell.get());
   if (!platform_view || !platform_view->GetWeakPtr()) {
-    return nullptr;
+    shell_promise.set_value(nullptr);
+    return shell_promise.get_future();
   }
 
   // Ask the platform view for the vsync waiter. This will be used by the engine
   // to create the animator.
   auto vsync_waiter = platform_view->CreateVSyncWaiter();
   if (!vsync_waiter) {
-    return nullptr;
+    shell_promise.set_value(nullptr);
+    return shell_promise.get_future();
   }
 
   // Create the IO manager on the IO thread. The IO manager must be initialized
@@ -133,6 +139,7 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
       shell->GetTaskRunners().GetUITaskRunner(),
       fml::MakeCopyable([&engine_promise,                                 //
                          shell = shell.get(),                             //
+                        //  shell = std::move(shell),                        //
                          &dispatcher_maker,                               //
                          &window_data,                                    //
                          isolate_snapshot = std::move(isolate_snapshot),  //
@@ -140,6 +147,11 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
                          &weak_io_manager_future,                         //
                          &snapshot_delegate_future,                       //
                          &unref_queue_future                              //
+                        //  &shell_promise,
+                        //  &engine_future,
+                        //  &rasterizer_future,
+                        //  platform_view = std::move(platform_view),
+                        //  &io_manager_future
   ]() mutable {
         TRACE_EVENT0("flutter", "ShellSetupUISubsystem");
         const auto& task_runners = shell->GetTaskRunners();
@@ -164,15 +176,17 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
             ));
       }));
 
-  if (!shell->Setup(std::move(platform_view),  //
-                    engine_future.get(),       //
-                    rasterizer_future.get(),   //
-                    io_manager_future.get())   //
-  ) {
-    return nullptr;
-  }
+        if (!shell->Setup(std::move(platform_view),  //
+                          engine_future.get(),       //
+                          rasterizer_future.get(),   //
+                          io_manager_future.get())   //
+        ) {
+          shell_promise.set_value(nullptr);
+        } else {
+          shell_promise.set_value(std::move(shell));
+        }
 
-  return shell;
+  return shell_promise.get_future();
 }
 
 static void RecordStartupTimestamp() {
@@ -318,7 +332,7 @@ std::unique_ptr<Shell> Shell::Create(
                                             std::move(isolate_snapshot),  //
                                             on_create_platform_view,      //
                                             on_create_rasterizer          //
-        );
+        ).get();
         latch.Signal();
       }));
   latch.Wait();

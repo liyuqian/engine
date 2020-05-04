@@ -422,7 +422,7 @@ class Shell final : public PlatformView::Delegate,
 
   Shell(DartVMRef vm, TaskRunners task_runners, Settings settings);
 
-  static std::unique_ptr<Shell> CreateShellOnPlatformThread(
+  static std::future<std::unique_ptr<Shell>> CreateShellOnPlatformThread(
       DartVMRef vm,
       TaskRunners task_runners,
       const WindowData window_data,
