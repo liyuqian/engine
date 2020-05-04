@@ -49,59 +49,61 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
     const Shell::CreateCallback<PlatformView>& on_create_platform_view,
     const Shell::CreateCallback<Rasterizer>& on_create_rasterizer) {
 
-  std::promise<std::unique_ptr<Shell>> shell_promise;
+  auto shell_promise = std::make_shared<std::promise<std::unique_ptr<Shell>>>();
 
   if (!task_runners.IsValid()) {
     FML_LOG(ERROR) << "Task runners to run the shell were invalid.";
-    shell_promise.set_value(nullptr);
-    return shell_promise.get_future();
+    shell_promise->set_value(nullptr);
+    return shell_promise->get_future();
   }
 
   auto shell =
       std::unique_ptr<Shell>(new Shell(std::move(vm), task_runners, settings));
 
   // Create the rasterizer on the raster thread.
-  std::promise<std::unique_ptr<Rasterizer>> rasterizer_promise;
-  auto rasterizer_future = rasterizer_promise.get_future();
-  std::promise<fml::WeakPtr<SnapshotDelegate>> snapshot_delegate_promise;
-  auto snapshot_delegate_future = snapshot_delegate_promise.get_future();
+
+  auto rasterizer_promise = std::make_shared<std::promise<std::unique_ptr<Rasterizer>>>();
+  auto rasterizer_future = rasterizer_promise->get_future();
+  auto snapshot_delegate_promise = std::make_shared<std::promise<fml::WeakPtr<SnapshotDelegate>>>();
+  auto snapshot_delegate_future = snapshot_delegate_promise->get_future();
   fml::TaskRunner::RunNowOrPostTask(
-      task_runners.GetRasterTaskRunner(), [&rasterizer_promise,  //
+      task_runners.GetRasterTaskRunner(), [rasterizer_promise,  //
                                            &snapshot_delegate_promise,
                                            on_create_rasterizer,  //
                                            shell = shell.get()    //
   ]() {
         TRACE_EVENT0("flutter", "ShellSetupGPUSubsystem");
         std::unique_ptr<Rasterizer> rasterizer(on_create_rasterizer(*shell));
-        snapshot_delegate_promise.set_value(rasterizer->GetSnapshotDelegate());
-        rasterizer_promise.set_value(std::move(rasterizer));
+        snapshot_delegate_promise->set_value(rasterizer->GetSnapshotDelegate());
+        rasterizer_promise->set_value(std::move(rasterizer));
       });
 
   // Create the platform view on the platform thread (this thread).
   auto platform_view = on_create_platform_view(*shell.get());
   if (!platform_view || !platform_view->GetWeakPtr()) {
-    shell_promise.set_value(nullptr);
-    return shell_promise.get_future();
+    shell_promise->set_value(nullptr);
+    return shell_promise->get_future();
   }
 
   // Ask the platform view for the vsync waiter. This will be used by the engine
   // to create the animator.
   auto vsync_waiter = platform_view->CreateVSyncWaiter();
   if (!vsync_waiter) {
-    shell_promise.set_value(nullptr);
-    return shell_promise.get_future();
+    shell_promise->set_value(nullptr);
+    return shell_promise->get_future();
   }
 
   // Create the IO manager on the IO thread. The IO manager must be initialized
   // first because it has state that the other subsystems depend on. It must
   // first be booted and the necessary references obtained to initialize the
   // other subsystems.
-  std::promise<std::unique_ptr<ShellIOManager>> io_manager_promise;
-  auto io_manager_future = io_manager_promise.get_future();
-  std::promise<fml::WeakPtr<ShellIOManager>> weak_io_manager_promise;
-  auto weak_io_manager_future = weak_io_manager_promise.get_future();
-  std::promise<fml::RefPtr<SkiaUnrefQueue>> unref_queue_promise;
-  auto unref_queue_future = unref_queue_promise.get_future();
+
+  auto io_manager_promise = std::make_shared<std::promise<std::unique_ptr<ShellIOManager>>>();
+  auto io_manager_future = io_manager_promise->get_future();
+  auto weak_io_manager_promise = std::make_shared<std::promise<fml::WeakPtr<ShellIOManager>>>();
+  auto weak_io_manager_future = weak_io_manager_promise->get_future();
+  auto unref_queue_promise = std::make_shared<std::promise<fml::RefPtr<SkiaUnrefQueue>>>();
+  auto unref_queue_future = unref_queue_promise->get_future();
   auto io_task_runner = shell->GetTaskRunners().GetIOTaskRunner();
 
   // TODO(gw280): The WeakPtr here asserts that we are derefing it on the
@@ -112,9 +114,9 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
   // https://github.com/flutter/flutter/issues/42948
   fml::TaskRunner::RunNowOrPostTask(
       io_task_runner,
-      [&io_manager_promise,                                               //
-       &weak_io_manager_promise,                                          //
-       &unref_queue_promise,                                              //
+      [io_manager_promise,                                               //
+       weak_io_manager_promise,                                          //
+       unref_queue_promise,                                              //
        platform_view = platform_view->GetWeakPtr(),                       //
        io_task_runner,                                                    //
        is_backgrounded_sync_switch = shell->GetIsGpuDisabledSyncSwitch()  //
@@ -123,9 +125,9 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
         auto io_manager = std::make_unique<ShellIOManager>(
             platform_view.getUnsafe()->CreateResourceContext(),
             is_backgrounded_sync_switch, io_task_runner);
-        weak_io_manager_promise.set_value(io_manager->GetWeakPtr());
-        unref_queue_promise.set_value(io_manager->GetSkiaUnrefQueue());
-        io_manager_promise.set_value(std::move(io_manager));
+        weak_io_manager_promise->set_value(io_manager->GetWeakPtr());
+        unref_queue_promise->set_value(io_manager->GetSkiaUnrefQueue());
+        io_manager_promise->set_value(std::move(io_manager));
       });
 
   // Send dispatcher_maker to the engine constructor because shell won't have
@@ -133,11 +135,11 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
   auto dispatcher_maker = platform_view->GetDispatcherMaker();
 
   // Create the engine on the UI thread.
-  std::promise<std::unique_ptr<Engine>> engine_promise;
-  auto engine_future = engine_promise.get_future();
+  auto engine_promise = std::make_shared<std::promise<std::unique_ptr<Engine>>>();
+  auto engine_future = engine_promise->get_future();
   fml::TaskRunner::RunNowOrPostTask(
       shell->GetTaskRunners().GetUITaskRunner(),
-      fml::MakeCopyable([&engine_promise,                                 //
+      fml::MakeCopyable([engine_promise,                                 //
                          shell = shell.get(),                             //
                         //  shell = std::move(shell),                        //
                          &dispatcher_maker,                               //
@@ -147,7 +149,7 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
                          &weak_io_manager_future,                         //
                          &snapshot_delegate_future,                       //
                          &unref_queue_future                              //
-                        //  &shell_promise,
+                        //  shell_promise,
                         //  &engine_future,
                         //  &rasterizer_future,
                         //  platform_view = std::move(platform_view),
@@ -161,7 +163,7 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
         auto animator = std::make_unique<Animator>(*shell, task_runners,
                                                    std::move(vsync_waiter));
 
-        engine_promise.set_value(std::make_unique<Engine>(
+        engine_promise->set_value(std::make_unique<Engine>(
             *shell,                         //
             dispatcher_maker,               //
             *shell->GetDartVM(),            //
@@ -181,12 +183,12 @@ std::future<std::unique_ptr<Shell>> Shell::CreateShellOnPlatformThread(
                           rasterizer_future.get(),   //
                           io_manager_future.get())   //
         ) {
-          shell_promise.set_value(nullptr);
+          shell_promise->set_value(nullptr);
         } else {
-          shell_promise.set_value(std::move(shell));
+          shell_promise->set_value(std::move(shell));
         }
 
-  return shell_promise.get_future();
+  return shell_promise->get_future();
 }
 
 static void RecordStartupTimestamp() {
